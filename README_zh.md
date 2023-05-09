@@ -98,7 +98,7 @@ MacHyperVSupport是适用于macOS的Hyper-V集成服务。需要在Windows Serve
   - `qemu-img convert -f raw -O vhdx Installer.dmg Installer.vhdx`
 
 ### 引导参数
-有关每个模块的引导参数，请参见[模块列表](Docs/modules.md)。
+有关每个模块的引导参数，请参见[模块列表](Docs/modules_zh.md)。
 
 ### 学分
 - [Apple](https://www.apple.com) 提供macOS

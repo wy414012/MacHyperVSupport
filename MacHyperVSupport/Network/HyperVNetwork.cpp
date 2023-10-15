@@ -40,9 +40,20 @@ bool HyperVNetwork::start(IOService *provider) {
 
   do {
     //
+    // Create medium list.
+    //
+    if (!createMediumDictionary()) {
+      HVSYSLOG("Failed to create medium dictionary");
+      break;
+    }
+
+    //
     // Install packet handlers.
     //
-    status = _hvDevice->installPacketActions(this, OSMemberFunctionCast(HyperVVMBusDevice::PacketReadyAction, this, &HyperVNetwork::handlePacket), OSMemberFunctionCast(HyperVVMBusDevice::WakePacketAction, this, &HyperVNetwork::wakePacketHandler), kHyperVNetworkReceivePacketSize);
+    status = _hvDevice->installPacketActions(this,
+                                             OSMemberFunctionCast(HyperVVMBusDevice::PacketReadyAction, this, &HyperVNetwork::handlePacket),
+                                             OSMemberFunctionCast(HyperVVMBusDevice::WakePacketAction, this, &HyperVNetwork::wakePacketHandler),
+                                             kHyperVNetworkReceivePacketSize);
     if (status != kIOReturnSuccess) {
       HVSYSLOG("Failed to install packet handlers with status 0x%X", status);
       break;
@@ -58,11 +69,10 @@ bool HyperVNetwork::start(IOService *provider) {
     status = _hvDevice->openVMBusChannel(kHyperVNetworkRingBufferSize, kHyperVNetworkRingBufferSize, kHyperVNetworkMaximumTransId);
     if (status != kIOReturnSuccess) {
       HVSYSLOG("Failed to open VMBus channel with status 0x%X", status);
-      break;
+      return status;
     }
     
     // TODO
-    rndisLock = IOLockAlloc();
     connectNetwork();
     
     //
@@ -99,6 +109,100 @@ void HyperVNetwork::stop(IOService *provider) {
   }
 
   super::stop(provider);
+}
+
+bool HyperVNetwork::createWorkLoop() {
+  _workLoop = IOWorkLoop::workLoop();
+  return _workLoop != nullptr;
+}
+
+bool HyperVNetwork::configureInterface(IONetworkInterface *interface) {
+  return super::configureInterface(interface);
+}
+
+IOReturn HyperVNetwork::enable(IONetworkInterface *interface) {
+  IOReturn status;
+  UInt32   filter;
+
+  //
+  // Enable packet filter.
+  //
+  filter = _packetFilterAdditional | kHyperVNetworkPacketFilterDirected | kHyperVNetworkPacketFilterBroadcast;
+  status = setPacketFilter(filter);
+  if (status != kIOReturnSuccess) {
+    return status;
+  }
+
+  _isNetworkEnabled = true;
+  HVDBGLOG("Networking enabled");
+  return kIOReturnSuccess;
+}
+
+IOReturn HyperVNetwork::disable(IONetworkInterface *interface) {
+  IOReturn status;
+
+  _isNetworkEnabled = false;
+
+  //
+  // Disable packet filter.
+  //
+  status = setPacketFilter(0);
+  if (status != kIOReturnSuccess) {
+    return status;
+  }
+
+  HVDBGLOG("Networking disabled");
+  return kIOReturnSuccess;
+}
+
+IOReturn HyperVNetwork::setMulticastMode(bool active) {
+  IOReturn status;
+  UInt32   filter;
+
+  //
+  // Enable/disable multicast mode.
+  //
+  if (active) {
+    _packetFilterAdditional |= kHyperVNetworkPacketFilterAllMulticast;
+  } else {
+    _packetFilterAdditional &= ~(kHyperVNetworkPacketFilterAllMulticast);
+  }
+
+  if (_isNetworkEnabled) {
+    filter = _packetFilterAdditional | kHyperVNetworkPacketFilterDirected | kHyperVNetworkPacketFilterBroadcast;
+    status = setPacketFilter(filter);
+    if (status != kIOReturnSuccess) {
+      return status;
+    }
+  }
+  HVDBGLOG("Multicast mode: %u", active);
+
+  return kIOReturnSuccess;
+}
+
+IOReturn HyperVNetwork::setPromiscuousMode(bool active) {
+  IOReturn status;
+  UInt32   filter;
+
+  //
+  // Enable/disable promiscuous mode.
+  //
+  if (active) {
+    _packetFilterAdditional |= kHyperVNetworkPacketFilterPromiscuous;
+  } else {
+    _packetFilterAdditional &= ~(kHyperVNetworkPacketFilterPromiscuous);
+  }
+
+  if (_isNetworkEnabled) {
+    filter = _packetFilterAdditional | kHyperVNetworkPacketFilterDirected | kHyperVNetworkPacketFilterBroadcast;
+    status = setPacketFilter(filter);
+    if (status != kIOReturnSuccess) {
+      return status;
+    }
+  }
+  HVDBGLOG("Promiscuous mode: %u", active);
+
+  return kIOReturnSuccess;
 }
 
 IOReturn HyperVNetwork::getHardwareAddress(IOEthernetAddress *addrP) {
@@ -161,7 +265,7 @@ UInt32 HyperVNetwork::outputPacket(mbuf_t m, void *param) {
   netMsg.v1.sendRNDISPacket.sendBufferSectionIndex = sendIndex;
   netMsg.v1.sendRNDISPacket.sendBufferSectionSize  = rndisMsg->header.length;
 
-  HVDBGLOG("Preparing to send packet of %u bytes using send section %u/%u", rndisMsg->header.length, sendIndex, _sendSectionCount);
+  HVDATADBGLOG("Preparing to send packet of %u bytes using send section %u/%u", rndisMsg->header.length, sendIndex, _sendSectionCount);
   status = _hvDevice->writeInbandPacketWithTransactionId(&netMsg, sizeof (netMsg), sendIndex | kHyperVNetworkSendTransIdBits, true);
   if (status != kIOReturnSuccess) {
     HVSYSLOG("Failed to send packet with status 0x%X", status);
@@ -174,14 +278,4 @@ UInt32 HyperVNetwork::outputPacket(mbuf_t m, void *param) {
   //
   freePacket(m);
   return kIOReturnOutputSuccess;
-}
-
-IOReturn HyperVNetwork::enable(IONetworkInterface *interface) {
-  _isNetworkEnabled = true;
-  return kIOReturnSuccess;
-}
-
-IOReturn HyperVNetwork::disable(IONetworkInterface *interface) {
-  _isNetworkEnabled = false;
-  return kIOReturnSuccess;
 }

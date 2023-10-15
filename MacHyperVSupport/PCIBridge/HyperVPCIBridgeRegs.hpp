@@ -9,6 +9,7 @@
 #define HyperVPCIBridgeRegs_h
 
 #define kHyperVPCIBridgeRingBufferSize  (4 * PAGE_SIZE)
+#define kHyperVPCIBridgeResponsePacketSize 256
 
 // First page selects the function, second page is PCI config space of selected function.
 #define kHyperVPCIBridgeWindowSize      (2 * PAGE_SIZE)
@@ -132,11 +133,11 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed))  {
   HyperVPCIBridgeMessageHeader  header;
   HyperVPCISlotEncoding         slot;
-  UInt8 vector;
-  UInt8 deliveryMode;
-  UInt16 vectorCount;
-  UInt32  reserved;
-  UInt64  cpuMask;
+  UInt8                         vector;
+  UInt8                         deliveryMode;
+  UInt16                        vectorCount;
+  UInt32                        reserved;
+  UInt64                        cpuMask;
 } HyperVPCIBridgeMessageCreateInterrupt;
 
 //
@@ -144,7 +145,6 @@ typedef struct __attribute__((packed))  {
 //
 // Message header.
 typedef struct __attribute__((packed)) {
-  VMBusPacketHeader           pktHeader;
   HyperVPCIBridgeMessageType  type;
 } HyperVPCIBridgeIncomingMessageHeader;
 
@@ -163,11 +163,10 @@ typedef struct __attribute__((packed)) {
 
 // Create interrupt
 typedef struct __attribute__((packed))  {
-  SInt32              status;
+  SInt32  status;
   UInt32  reserved2;
   UInt16  reserved;
-  UInt16 vectorCount;
-  
+  UInt16  vectorCount;
   UInt32  data;
   UInt64  address;
 } HyperVPCIBridgeMessageCreateInterruptResponse;

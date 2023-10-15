@@ -49,7 +49,7 @@ void HyperVNetwork::handleRNDISRanges(VMBusPacketTransferPages *pktPages, UInt32
     HVSYSLOG("Invalid message of type 0x%X and pageset ID of 0x%X received", netMsg->messageType, pktPages->transferPagesetId);
     return;
   }
-  HVDBGLOG("Received %u RNDIS ranges, range[0] count = %u, offset = 0x%X", pktPages->rangeCount, pktPages->ranges[0].count, pktPages->ranges[0].offset);
+  HVDATADBGLOG("Received %u RNDIS ranges, range[0] count = %u, offset = 0x%X", pktPages->rangeCount, pktPages->ranges[0].count, pktPages->ranges[0].offset);
   
   //
   // Process each range which contains a packet.
@@ -58,7 +58,7 @@ void HyperVNetwork::handleRNDISRanges(VMBusPacketTransferPages *pktPages, UInt32
     UInt8 *data = ((UInt8*) _receiveBuffer.buffer) + pktPages->ranges[i].offset;
     UInt32 dataLength = pktPages->ranges[i].count;
     
-    HVDBGLOG("Got range of %u bytes at 0x%X", dataLength, pktPages->ranges[i].offset);
+    HVDATADBGLOG("Got range of %u bytes at 0x%X", dataLength, pktPages->ranges[i].offset);
     processRNDISPacket(data, dataLength);
   }
   
@@ -93,26 +93,35 @@ void HyperVNetwork::handleCompletion(void *pktData, UInt32 pktLength) {
     }
 }
 
-bool HyperVNetwork::negotiateProtocol(HyperVNetworkProtocolVersion protocolVersion) {
-  // Send requested version to Hyper-V.
+IOReturn HyperVNetwork::negotiateProtocol(HyperVNetworkProtocolVersion protocolVersion) {
+  IOReturn             status;
   HyperVNetworkMessage netMsg;
+
+  //
+  // Send requested network procotol version to Hyper-V.
+  //
   memset(&netMsg, 0, sizeof (netMsg));
   netMsg.messageType = kHyperVNetworkMessageTypeInit;
   netMsg.init.initVersion.maxProtocolVersion = protocolVersion;
   netMsg.init.initVersion.minProtocolVersion = protocolVersion;
 
-  if (_hvDevice->writeInbandPacket(&netMsg, sizeof (netMsg), true, &netMsg, sizeof (netMsg)) != kIOReturnSuccess) {
-    HVSYSLOG("failed to send protocol negotiation message");
-    return false;
+  status = _hvDevice->writeInbandPacket(&netMsg, sizeof (netMsg), true, &netMsg, sizeof (netMsg));
+  if (status != kIOReturnSuccess) {
+    HVSYSLOG("Failed to send protocol negotiation message with status 0x%X", status);
+    return status;
   }
 
+  //
+  // Verify desired protocol version is supported.
+  //
   if (netMsg.init.initComplete.status != kHyperVNetworkMessageStatusSuccess) {
-    HVSYSLOG("error returned from Hyper-V: 0x%X", netMsg.init.initComplete.status);
+    HVSYSLOG("Error while negotiating protocol version: 0x%X", netMsg.init.initComplete.status);
+    return kIOReturnUnsupported;
   }
 
-  HVDBGLOG("Can use protocol 0x%X, max MDL length %u",
-         netMsg.init.initComplete.negotiatedProtocolVersion, netMsg.init.initComplete.maxMdlChainLength);
-  return true;
+  HVDBGLOG("Can use protocol version 0x%X, max MDL length %u",
+           netMsg.init.initComplete.negotiatedProtocolVersion, netMsg.init.initComplete.maxMdlChainLength);
+  return kIOReturnSuccess;
 }
 
 IOReturn HyperVNetwork::initSendReceiveBuffers() {
@@ -309,60 +318,107 @@ bool HyperVNetwork::connectNetwork() {
   
   initializeRNDIS();
   
-  createMediumDictionary();
+  //
+  // Set packet filter initially to zero.
+  //
+  setPacketFilter(0);
+  
   readMACAddress();
   updateLinkState(NULL);
   
-  //UInt32 filter = 0x9;
-  //setRNDISOID(kHyperVNetworkRNDISOIDGeneralCurrentPacketFilter, &filter, sizeof (filter));
-  
   return true;
 }
 
-void HyperVNetwork::createMediumDictionary() {
-  OSDictionary *mediumDict;
-  
-  //
-  // Create medium dictionary.
-  // Speed/duplex is irrelvant for Hyper-V, use basic auto settings.
-  //
-  mediumDict = OSDictionary::withCapacity(1);
-  if (mediumDict == nullptr) {
-    return;
-  }
-  
-  _networkMedium = IONetworkMedium::medium(kIOMediumEthernetAuto | kIOMediumOptionFullDuplex, 0);
-  if (_networkMedium == nullptr) {
-    mediumDict->release();
-    return;
-  }
-  
-  IONetworkMedium::addMedium(mediumDict, _networkMedium);
+bool HyperVNetwork::addNetworkMedium(OSDictionary *mediumDict, IOMediumType type) {
+  bool            result = false;
+  IONetworkMedium *medium = IONetworkMedium::medium(type, 0);
 
-  publishMediumDictionary(mediumDict);
-  setCurrentMedium(_networkMedium);
-  
-  mediumDict->release();
+  //
+  // Add created medium to dictionary.
+  //
+  if (medium != nullptr) {
+    result = IONetworkMedium::addMedium(mediumDict, medium);
+    medium->release();
+  }
+
+  return result;
 }
 
-bool HyperVNetwork::readMACAddress() {
-  UInt32 macSize = sizeof (_ethAddress.bytes);
-  if (getRNDISOID(kHyperVNetworkRNDISOIDEthernetPermanentAddress, (void *)_ethAddress.bytes, &macSize) != kIOReturnSuccess) {
-    HVSYSLOG("Failed to get MAC address");
+bool HyperVNetwork::createMediumDictionary() {
+  bool                result;
+  OSDictionary        *mediumDict;
+
+  //
+  // Create medium dictionary.
+  // Speed/duplex is irrelvant for Hyper-V, simply create entries for automatic settings.
+  //
+  mediumDict = OSDictionary::withCapacity(2);
+  if (mediumDict == nullptr) {
     return false;
   }
-  
+
+  result = true;
+  result &= addNetworkMedium(mediumDict, kIOMediumEthernetNone);
+  result &= addNetworkMedium(mediumDict, kIOMediumEthernetAuto);
+  if (!result) {
+    HVSYSLOG("Failed to add network mediums to medium dictionary");
+    mediumDict->release();
+    return false;
+  }
+
+  //
+  // Publish medium dictionary.
+  //
+  result = publishMediumDictionary(mediumDict);
+  mediumDict->release();
+  if (!result) {
+    HVSYSLOG("Failed to publish medium dictionary");
+  }
+  return result;
+}
+
+IOReturn HyperVNetwork::readMACAddress() {
+  //
+  // MAC address stored in 802.3 OID.
+  //
+  UInt32 macSize = sizeof (_ethAddress.bytes);
+  IOReturn status = getRNDISOID(kHyperVNetworkRNDISOIDEthernetPermanentAddress, (void *)_ethAddress.bytes, &macSize);
+  if (status != kIOReturnSuccess) {
+    HVSYSLOG("Failed to get MAC address");
+    return status;
+  }
+
   HVDBGLOG("MAC address is %02X:%02X:%02X:%02X:%02X:%02X",
            _ethAddress.bytes[0], _ethAddress.bytes[1], _ethAddress.bytes[2],
            _ethAddress.bytes[3], _ethAddress.bytes[4], _ethAddress.bytes[5]);
-  return true;
+  return kIOReturnSuccess;
+}
+
+IOReturn HyperVNetwork::setPacketFilter(UInt32 filter) {
+  IOReturn status = setRNDISOID(kHyperVNetworkRNDISOIDGeneralCurrentPacketFilter, &filter, sizeof (filter));
+  if (status != kIOReturnSuccess) {
+    HVSYSLOG("Failed to set packet filter to %X", filter);
+    return status;
+  }
+  
+  HVDBGLOG("Packet filter is now %X", filter);
+  return kIOReturnSuccess;
 }
 
 void HyperVNetwork::updateLinkState(HyperVNetworkRNDISMessageIndicateStatus *indicateStatus) {
+  const OSDictionary  *mediumDict;
+  IONetworkMedium     *medium;
+
+  mediumDict = getMediumDictionary();
+  if (mediumDict == nullptr) {
+    HVSYSLOG("Failed to get medium dictionary");
+    return;
+  }
+
   //
   // Pull initial link state from OID.
   //
-  if (indicateStatus == NULL) {
+  if (indicateStatus == nullptr) {
     HyperVNetworkRNDISLinkState linkState;
     UInt32 linkStateSize = sizeof (linkState);
     if (getRNDISOID(kHyperVNetworkRNDISOIDGeneralMediaConnectStatus, &linkState, &linkStateSize) != kIOReturnSuccess) {
@@ -373,7 +429,8 @@ void HyperVNetwork::updateLinkState(HyperVNetworkRNDISMessageIndicateStatus *ind
     HVDBGLOG("Link state is initially %s", linkState == kHyperVNetworkRNDISLinkStateConnected ? "up" : "down");
     _isLinkUp = linkState == kHyperVNetworkRNDISLinkStateConnected;
     if (_isLinkUp) {
-      setLinkStatus(kIONetworkLinkValid | kIONetworkLinkActive, _networkMedium);
+      medium = IONetworkMedium::getMediumWithType(mediumDict, kIOMediumEthernetAuto);
+      setLinkStatus(kIONetworkLinkValid | kIONetworkLinkActive, medium);
     } else {
       setLinkStatus(kIONetworkLinkValid, 0);
     }
@@ -393,7 +450,8 @@ void HyperVNetwork::updateLinkState(HyperVNetworkRNDISMessageIndicateStatus *ind
     case kHyperVNetworkRNDISStatusMediaConnect:
       if (!_isLinkUp) {
         HVDBGLOG("Link is coming up");
-        setLinkStatus(kIONetworkLinkValid | kIONetworkLinkActive, _networkMedium);
+        medium = IONetworkMedium::getMediumWithType(mediumDict, kIOMediumEthernetAuto);
+        setLinkStatus(kIONetworkLinkValid | kIONetworkLinkActive, medium);
         _isLinkUp = true;
       }
       break;
@@ -412,8 +470,9 @@ void HyperVNetwork::updateLinkState(HyperVNetworkRNDISMessageIndicateStatus *ind
         // Do a link up and down to force a refresh in the OS.
         //
         HVDBGLOG("Link has changed networks");
+        medium = IONetworkMedium::getMediumWithType(mediumDict, kIOMediumEthernetAuto);
         setLinkStatus(kIONetworkLinkValid, 0);
-        setLinkStatus(kIONetworkLinkValid | kIONetworkLinkActive, _networkMedium);
+        setLinkStatus(kIONetworkLinkValid | kIONetworkLinkActive, medium);
       }
       break;
 

@@ -24,6 +24,9 @@
 #define kHyperVNetworkMaximumTransId  0xFFFFFFFF
 #define kHyperVNetworkSendTransIdBits 0xFA00000000000000
 
+#define kHyperVNetworkVendor    "Microsoft"
+#define kHyperVNetworkModel     "Hyper-V Network Adapter"
+
 //
 // Protocol versions.
 //
@@ -406,6 +409,22 @@ typedef enum : UInt32 {
   kHyperVNetworkRNDISLinkStateConnected,
   kHyperVNetworkRNDISLinkStateDisconnted
 } HyperVNetworkRNDISLinkState;
+
+//
+// Packet filter bits.
+//
+#define kHyperVNetworkPacketFilterDirected        BIT(0)
+#define kHyperVNetworkPacketFilterMulticast       BIT(1)
+#define kHyperVNetworkPacketFilterAllMulticast    BIT(2)
+#define kHyperVNetworkPacketFilterBroadcast       BIT(3)
+#define kHyperVNetworkPacketFilterSourceRouting   BIT(4)
+#define kHyperVNetworkPacketFilterPromiscuous     BIT(5)
+#define kHyperVNetworkPacketFilterSMT             BIT(6)
+#define kHyperVNetworkPacketFilterAllLocal        BIT(7)
+#define kHyperVNetworkPacketFilterGroup           BIT(8)
+#define kHyperVNetworkPacketFilterAllFunctional   BIT(9)
+#define kHyperVNetworkPacketFilterFunctional      BIT(10)
+#define kHyperVNetworkPacketFilterMACFrame        BIT(11)
 
 //
 // Get OID request message.

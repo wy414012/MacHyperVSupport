@@ -9,8 +9,6 @@
 
 OSDefineMetaClassAndStructors(HyperVPCIBridge, super);
 
-extern const OSSymbol *gIOPlatformGetMessagedInterruptAddressKey;
-
 bool HyperVPCIBridge::start(IOService *provider) {
   bool     result = false;
   IOReturn status;
@@ -115,7 +113,7 @@ IOReturn HyperVPCIBridge::callPlatformFunction(const OSSymbol *functionName, boo
   //
   // ARGS: gIOPlatformGetMessagedInterruptAddressKey, ..., nub, NULL, vector number, (out) message address[3]
   //
-  if (functionName == gIOPlatformGetMessagedInterruptAddressKey) {
+  if (strcmp(functionName->getCStringNoCopy(), "GetMessagedInterruptAddress") == 0) {
     //
     // vector     = interrupt vector
     // message[0] = MSI addr lo
@@ -263,4 +261,15 @@ void HyperVPCIBridge::configWrite8(IOPCIAddressSpace space, UInt8 offset, UInt8 
   // Perform 8-bit extended write.
   //
   writePCIConfig(offset32, sizeof (UInt8), data);
+}
+
+bool HyperVPCIBridge::initializeNub(IOPCIDevice *nub, OSDictionary *from) {
+  //
+  // Merge any injected properties into device tree.
+  //
+  IOReturn status = mergePropertiesFromDT(nub->getFunctionNumber(), from);
+  if (status != kIOReturnSuccess) {
+    HVSYSLOG("Failed to merge device properties");
+  }
+  return super::initializeNub(nub, from);
 }
